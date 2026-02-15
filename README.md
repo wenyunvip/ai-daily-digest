@@ -36,6 +36,39 @@ python3 scripts/digest.py --feishu --feishu-mode create
 python3 scripts/digest.py --feishu --feishu-mode append
 ```
 
+### 方式 3: 邮件推送
+
+```bash
+# 配置邮件（在 --setup 中设置 SMTP 或 SendGrid）
+python3 scripts/digest.py --setup
+
+# 运行时发送邮件
+python3 scripts/digest.py --email
+```
+
+### 方式 4: 增量更新（推荐定时任务使用）
+
+```bash
+# 只处理新文章（跳过已缓存的）
+python3 scripts/digest.py --incremental
+
+# 清理旧缓存
+python3 scripts/digest.py --clean-cache
+```
+
+### 方式 5: 定时任务（全自动）
+
+```bash
+# 安装 cron 任务（交互式配置）
+python3 scripts/digest.py --install-cron
+
+# 选择定时策略：
+# - 每天 9:00（默认）
+# - 每天 18:00
+# - 每 6 小时
+# - 自定义 cron 表达式
+```
+
 ### 方式 3: 环境变量
 
 ```bash

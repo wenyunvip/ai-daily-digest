@@ -153,6 +153,48 @@ def interactive_setup():
     if feishu_folder:
         config['feishu_folder_token'] = feishu_folder
     
+    # Email configuration
+    print()
+    print("📧 Email Notification (optional)")
+    print("Enable email notifications? (y/n) [n]: ", end='', flush=True)
+    enable_email = input().strip().lower()
+    
+    if enable_email in ('y', 'yes'):
+        if 'email' not in config:
+            config['email'] = {}
+        config['email']['enabled'] = True
+        
+        print("  Email provider (smtp/sendgrid) [smtp]: ", end='', flush=True)
+        provider = input().strip() or 'smtp'
+        config['email']['provider'] = provider
+        
+        if provider == 'smtp':
+            print("  SMTP Host [smtp.gmail.com]: ", end='', flush=True)
+            smtp_host = input().strip() or 'smtp.gmail.com'
+            config['email']['smtp_host'] = smtp_host
+            
+            print("  SMTP Port [587]: ", end='', flush=True)
+            smtp_port = input().strip() or '587'
+            config['email']['smtp_port'] = int(smtp_port)
+            
+            print("  Username: ", end='', flush=True)
+            config['email']['username'] = input().strip()
+            
+            print("  Password: ", end='', flush=True)
+            config['email']['password'] = input().strip()
+            
+            print("  From address: ", end='', flush=True)
+            config['email']['from'] = input().strip()
+        else:
+            print("  SendGrid API Key: ", end='', flush=True)
+            config['email']['sendgrid_api_key'] = input().strip()
+            print("  From address: ", end='', flush=True)
+            config['email']['from'] = input().strip()
+        
+        print("  To addresses (comma-separated): ", end='', flush=True)
+        to_addrs = input().strip()
+        config['email']['to'] = [addr.strip() for addr in to_addrs.split(',') if addr.strip()]
+    
     # Save
     save_config(config)
     print()
@@ -878,6 +920,350 @@ def generate_markdown(articles: List[Dict], trends: str, hours: int, top_n: int)
     return '\n'.join(lines)
 
 # ============================================================================
+# Caching System (SQLite)
+# ============================================================================
+
+CACHE_DB = CONFIG_DIR / 'cache.db'
+
+def init_cache():
+    """Initialize SQLite cache database."""
+    ensure_config_dir()
+    import sqlite3
+    conn = sqlite3.connect(str(CACHE_DB))
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS articles (
+            link TEXT PRIMARY KEY,
+            title TEXT,
+            source TEXT,
+            pub_date TEXT,
+            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS last_run (
+            id INTEGER PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            articles_count INTEGER,
+            status TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def is_article_cached(link: str) -> bool:
+    """Check if article is already in cache."""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(CACHE_DB))
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM articles WHERE link = ?', (link,))
+        result = cursor.fetchone() is not None
+        conn.close()
+        return result
+    except:
+        return False
+
+def cache_article(link: str, title: str, source: str, pub_date: str):
+    """Add article to cache."""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(CACHE_DB))
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO articles (link, title, source, pub_date)
+            VALUES (?, ?, ?, ?)
+        ''', (link, title, source, pub_date))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+def get_last_run_time() -> Optional[datetime]:
+    """Get last successful run timestamp."""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(CACHE_DB))
+        cursor = conn.cursor()
+        cursor.execute('SELECT timestamp FROM last_run ORDER BY id DESC LIMIT 1')
+        result = cursor.fetchone()
+        conn.close()
+        if result:
+            return datetime.fromisoformat(result[0])
+    except:
+        pass
+    return None
+
+def record_run(articles_count: int, status: str = 'success'):
+    """Record this run to database."""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(CACHE_DB))
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO last_run (articles_count, status)
+            VALUES (?, ?)
+        ''', (articles_count, status))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+def filter_new_articles(articles: List[Dict]) -> List[Dict]:
+    """Filter out already cached articles."""
+    new_articles = []
+    for article in articles:
+        if not is_article_cached(article['link']):
+            new_articles.append(article)
+            cache_article(article['link'], article['title'], 
+                         article['sourceName'], article['pubDate'].isoformat())
+    return new_articles
+
+def clean_old_cache(days: int = 30):
+    """Remove articles older than specified days."""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(CACHE_DB))
+        cursor = conn.cursor()
+        cursor.execute('''
+            DELETE FROM articles 
+            WHERE fetched_at < datetime('now', '-{} days')
+        '''.format(days))
+        cursor.execute('''
+            DELETE FROM last_run 
+            WHERE timestamp < datetime('now', '-{} days')
+        '''.format(days))
+        conn.commit()
+        conn.close()
+        print(f"[cache] Cleaned articles older than {days} days")
+    except Exception as e:
+        print(f"[cache] Clean error: {e}")
+
+# ============================================================================
+# Email Notification
+# ============================================================================
+
+def send_email(content: str, subject: str = None, config: Dict[str, Any] = None) -> bool:
+    """Send digest via email.
+    
+    Supports SMTP and SendGrid.
+    """
+    if not config:
+        config = load_config()
+    
+    email_config = config.get('email', {})
+    
+    # Check if email is configured
+    if not email_config.get('enabled', False):
+        print("[email] Email not configured, skipping")
+        return False
+    
+    try:
+        provider = email_config.get('provider', 'smtp')
+        
+        if provider == 'smtp':
+            return send_email_smtp(content, subject, email_config)
+        elif provider == 'sendgrid':
+            return send_email_sendgrid(content, subject, email_config)
+        else:
+            print(f"[email] Unknown provider: {provider}")
+            return False
+            
+    except Exception as e:
+        print(f"[email] Failed to send: {e}")
+        return False
+
+def send_email_smtp(content: str, subject: str, config: Dict) -> bool:
+    """Send email via SMTP."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    
+    smtp_host = config.get('smtp_host', 'smtp.gmail.com')
+    smtp_port = config.get('smtp_port', 587)
+    username = config.get('username')
+    password = config.get('password')
+    from_addr = config.get('from', username)
+    to_addrs = config.get('to', [])
+    
+    if not all([username, password, to_addrs]):
+        print("[email] SMTP configuration incomplete")
+        return False
+    
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject or 'AI Daily Digest'
+    msg['From'] = from_addr
+    msg['To'] = ', '.join(to_addrs)
+    
+    # Convert markdown to HTML (simple version)
+    html_content = markdown_to_html(content)
+    
+    msg.attach(MIMEText(content, 'plain', 'utf-8'))
+    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+    
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.starttls()
+        server.login(username, password)
+        server.sendmail(from_addr, to_addrs, msg.as_string())
+    
+    print(f"[email] ✓ Sent to {', '.join(to_addrs)}")
+    return True
+
+def send_email_sendgrid(content: str, subject: str, config: Dict) -> bool:
+    """Send email via SendGrid API."""
+    api_key = config.get('sendgrid_api_key')
+    from_addr = config.get('from')
+    to_addrs = config.get('to', [])
+    
+    if not all([api_key, from_addr, to_addrs]):
+        print("[email] SendGrid configuration incomplete")
+        return False
+    
+    url = 'https://api.sendgrid.com/v3/mail/send'
+    
+    data = {
+        'personalizations': [{
+            'to': [{'email': addr} for addr in to_addrs]
+        }],
+        'from': {'email': from_addr},
+        'subject': subject or 'AI Daily Digest',
+        'content': [
+            {'type': 'text/plain', 'value': content},
+            {'type': 'text/html', 'value': markdown_to_html(content)}
+        ]
+    }
+    
+    req = urllib.request.Request(
+        url,
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        },
+        data=json.dumps(data).encode('utf-8'),
+        method='POST'
+    )
+    
+    response = urllib.request.urlopen(req, timeout=30)
+    
+    if response.status == 202:
+        print(f"[email] ✓ Sent via SendGrid to {', '.join(to_addrs)}")
+        return True
+    return False
+
+def markdown_to_html(markdown: str) -> str:
+    """Simple markdown to HTML conversion."""
+    html = markdown
+    
+    # Headers
+    for i in range(6, 0, -1):
+        html = re.sub(f'^{"#" * i} (.+)$', f'<h{i}>\\1</h{i}>', html, flags=re.MULTILINE)
+    
+    # Bold
+    html = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html)
+    
+    # Italic
+    html = re.sub(r'\*(.+?)\*', r'<em>\1</em>', html)
+    
+    # Links
+    html = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', html)
+    
+    # Line breaks
+    html = html.replace('\n', '<br>')
+    
+    # Wrap in basic HTML
+    return f'<html><body style="font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px;">{html}</body></html>'
+
+# ============================================================================
+# Cron Job Installation
+# ============================================================================
+
+def install_cron_job(config: Dict[str, Any]) -> int:
+    """Install cron job for daily automatic run."""
+    import subprocess
+    import tempfile
+    
+    print("=" * 60)
+    print("🕐 Cron Job Installation")
+    print("=" * 60)
+    print()
+    
+    # Check if cron is available
+    cron_check = subprocess.run(['which', 'crontab'], capture_output=True, timeout=5)
+    if cron_check.returncode != 0:
+        print("[cron] Error: crontab not found. Please install cron.")
+        return 1
+    
+    # Get current crontab
+    try:
+        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True, timeout=5)
+        current_cron = result.stdout if result.returncode == 0 else ''
+    except:
+        current_cron = ''
+    
+    # Check if already installed
+    if 'ai-daily-digest' in current_cron:
+        print("[cron] A cron job for ai-daily-digest already exists.")
+        print("To remove it, run: crontab -e")
+        return 0
+    
+    # Get script path
+    script_path = Path(__file__).resolve()
+    
+    # Build command
+    cmd_parts = [sys.executable, str(script_path)]
+    if config.get('feishu_doc_token') or config.get('feishu_folder_token'):
+        cmd_parts.append('--feishu')
+    if config.get('email', {}).get('enabled'):
+        cmd_parts.append('--email')
+    cmd_parts.append('--incremental')
+    
+    cmd = ' '.join(cmd_parts)
+    
+    # Schedule options
+    print("Choose schedule:")
+    print("  1. Daily at 9:00 AM (default)")
+    print("  2. Daily at 6:00 PM")
+    print("  3. Every 6 hours")
+    print("  4. Custom cron expression")
+    choice = input("\nSelect [1]: ").strip() or '1'
+    
+    schedules = {'1': '0 9 * * *', '2': '0 18 * * *', '3': '0 */6 * * *'}
+    
+    if choice in schedules:
+        schedule = schedules[choice]
+    else:
+        schedule = input("Enter cron expression: ").strip()
+        if not schedule:
+            print("[cron] Invalid expression")
+            return 1
+    
+    # Create cron line
+    log_file = CONFIG_DIR / 'cron.log'
+    cron_line = f"{schedule} {cmd} >> {log_file} 2>&1"
+    new_cron = current_cron + f'\n# AI Daily Digest\n{cron_line}\n'
+    
+    # Install
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.cron', delete=False) as f:
+        f.write(new_cron)
+        temp_path = f.name
+    
+    try:
+        result = subprocess.run(['crontab', temp_path], capture_output=True, text=True, timeout=5)
+        os.unlink(temp_path)
+        
+        if result.returncode == 0:
+            print(f"\n✅ Cron job installed!")
+            print(f"Schedule: {schedule}")
+            print(f"Log: {log_file}")
+            return 0
+        else:
+            print(f"[cron] Error: {result.stderr}")
+            return 1
+    except Exception as e:
+        print(f"[cron] Error: {e}")
+        return 1
+
+# ============================================================================
 # Feishu Integration (Enhanced)
 # ============================================================================
 
@@ -1104,6 +1490,16 @@ def main():
     parser.add_argument('--feishu-mode', choices=['auto', 'append', 'create', 'update'],
                         default='auto',
                         help='Feishu export mode: auto (default), append, create, or update')
+    parser.add_argument('--email', action='store_true',
+                        help='Send digest via email')
+    parser.add_argument('--incremental', action='store_true',
+                        help='Use incremental mode (only process new articles)')
+    parser.add_argument('--no-cache', action='store_true',
+                        help='Skip cache, fetch all articles fresh')
+    parser.add_argument('--clean-cache', action='store_true',
+                        help='Clean old cache entries')
+    parser.add_argument('--install-cron', action='store_true',
+                        help='Install cron job for daily automatic run')
     
     args = parser.parse_args()
     
@@ -1126,7 +1522,22 @@ def main():
         feishu_folder = config.get('feishu_folder_token', '')
         print(f"  Feishu Doc: {'***' + feishu_doc[-4:] if feishu_doc else 'Not set'}")
         print(f"  Feishu Folder: {'***' + feishu_folder[-4:] if feishu_folder else 'Not set'}")
+        email_enabled = config.get('email', {}).get('enabled', False)
+        print(f"  Email: {'Enabled' if email_enabled else 'Not configured'}")
         return 0
+    
+    # Handle cache cleaning
+    if args.clean_cache:
+        clean_old_cache()
+        return 0
+    
+    # Handle cron installation
+    if args.install_cron:
+        return install_cron_job(config)
+    
+    # Initialize cache
+    if not args.no_cache:
+        init_cache()
     
     # Auto-generate output path if not specified
     if not args.output:
@@ -1147,16 +1558,32 @@ def main():
     
     # Step 1: Fetch feeds
     print("[digest] Step 1/5: Fetching RSS feeds...")
+    
+    # Check for incremental mode
+    if args.incremental and not args.no_cache:
+        last_run = get_last_run_time()
+        if last_run:
+            hours_since_last = (datetime.now(timezone.utc) - last_run).total_seconds() / 3600
+            print(f"[digest] Incremental mode: last run {hours_since_last:.1f}h ago")
+            # Adjust hours to cover the gap
+            if hours_since_last > args.hours:
+                args.hours = int(hours_since_last) + 1
+                print(f"[digest] Adjusted time window to {args.hours}h")
+    
     all_articles = fetch_all_feeds(RSS_FEEDS)
     
     if not all_articles:
         print("[digest] No articles fetched. Exiting.")
+        record_run(0, 'no_articles')
         return 1
     
-    # Step 2: Time filter
+    # Step 2: Filter new articles (cache + time)
     from datetime import timezone
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     recent_articles = []
+    new_count = 0
+    cached_count = 0
+    
     for a in all_articles:
         try:
             pub_date = a['pubDate']
@@ -1164,11 +1591,25 @@ def main():
                 # Ensure both dates are offset-aware
                 if pub_date.tzinfo is None:
                     pub_date = pub_date.replace(tzinfo=timezone.utc)
+                
+                # Time filter
                 if pub_date >= cutoff:
+                    # Cache filter (if incremental mode)
+                    if args.incremental and not args.no_cache:
+                        if is_article_cached(a['link']):
+                            cached_count += 1
+                            continue
+                        new_count += 1
+                        cache_article(a['link'], a['title'], a['sourceName'], a['pubDate'].isoformat())
+                    
                     recent_articles.append(a)
         except:
             pass
-    print(f"[digest] Step 2/5: Filtered to {len(recent_articles)} articles from last {args.hours}h")
+    
+    if args.incremental and not args.no_cache:
+        print(f"[digest] Step 2/5: Found {len(recent_articles)} articles ({new_count} new, {cached_count} cached)")
+    else:
+        print(f"[digest] Step 2/5: Filtered to {len(recent_articles)} articles from last {args.hours}h")
     
     if not recent_articles:
         print("[digest] No recent articles. Try increasing --hours.")
@@ -1210,6 +1651,23 @@ def main():
             print(f"[digest] ✓ Exported to Feishu: {feishu_result}")
         else:
             print(f"[digest] ✗ Feishu export failed: {feishu_result}")
+    
+    # Send email if requested
+    if args.email:
+        email_config = config.get('email', {})
+        if email_config.get('enabled'):
+            subject = f"AI Daily Digest - {datetime.now().strftime('%Y-%m-%d')}"
+            email_sent = send_email(markdown, subject, config)
+            if email_sent:
+                print(f"[digest] ✓ Email sent successfully")
+            else:
+                print(f"[digest] ✗ Email failed")
+        else:
+            print(f"[digest] Email not configured, run --setup to configure")
+    
+    # Record run
+    if not args.no_cache:
+        record_run(len(summarized), 'success')
     
     return 0
 

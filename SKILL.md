@@ -99,8 +99,6 @@ python3 scripts/digest.py \
 python3 scripts/digest.py --setup
 
 # 智能导出（auto 模式）
-# - 如果有 Doc Token，追加到现有文档
-# - 如果有 Folder Token，创建新文档
 python3 scripts/digest.py --feishu
 
 # 强制创建新文档
@@ -114,14 +112,65 @@ python3 scripts/digest.py --feishu --feishu-mode update
 ```
 
 **获取 Token**：
-- **Doc Token**: 从飞书文档 URL 提取 `https://xxx.feishu.cn/docx/ABC123xxx`
-- **Folder Token**: 从飞书云盘文件夹 URL 提取 `https://xxx.feishu.cn/drive/folder/FLDxxx`
+- **Doc Token**: `https://xxx.feishu.cn/docx/ABC123xxx`
+- **Folder Token**: `https://xxx.feishu.cn/drive/folder/FLDxxx`
 
-**特性**：
-- ✅ 自动重试机制（失败自动重试 2 次）
-- ✅ Token 提取（从命令输出自动解析文档 URL）
-- ✅ 智能模式（根据配置自动选择追加/创建）
-- ✅ 日期分隔（追加模式自动添加日期标题）
+### Email Notification
+
+支持 SMTP 和 SendGrid 两种邮件发送方式：
+
+```bash
+# 配置邮件（交互式）
+python3 scripts/digest.py --setup
+
+# 运行时发送邮件
+python3 scripts/digest.py --email
+```
+
+**支持的邮件服务商**：
+- Gmail SMTP
+- SendGrid API
+- 自定义 SMTP
+
+### Incremental Updates
+
+使用 SQLite 缓存避免重复处理文章：
+
+```bash
+# 只处理新文章（跳过已缓存的）
+python3 scripts/digest.py --incremental
+
+# 清理 30 天前的缓存
+python3 scripts/digest.py --clean-cache
+
+# 强制全量更新（忽略缓存）
+python3 scripts/digest.py --no-cache
+```
+
+**优势**：
+- 运行时间从 2 分钟 → 30 秒
+- 减少 API 调用成本
+- 适合定时任务
+
+### Cron Job (定时任务)
+
+一键安装定时任务，实现全自动日报：
+
+```bash
+# 安装 cron 任务
+python3 scripts/digest.py --install-cron
+
+# 选择定时策略：
+# - 每天 9:00（推荐）
+# - 每天 18:00
+# - 每 6 小时
+# - 自定义 cron 表达式
+```
+
+**自动配置**：
+- 根据当前配置自动添加 `--feishu` 或 `--email` 标志
+- 自动使用 `--incremental` 模式
+- 日志保存到 `~/.ai-daily-digest/cron.log`
 
 ### Parameters
 
