@@ -7,13 +7,34 @@
 
 ## 快速开始
 
-```bash
-# 1. 获取 Moonshot API Key
-# 访问 https://platform.moonshot.cn/ 免费获取
+### 方式 1: 交互式配置（推荐首次使用）
 
-# 2. 运行
+```bash
+# 1. 首次运行配置向导
+python3 scripts/digest.py --setup
+
+# 2. 之后直接运行（使用配置好的参数）
+python3 scripts/digest.py
+```
+
+### 方式 2: 环境变量
+
+```bash
+# 设置环境变量
 export MOONSHOT_API_KEY="your-api-key"
-python3 scripts/digest.py --hours 48 --top-n 15 --output ./digest.md
+
+# 运行
+python3 scripts/digest.py --hours 48 --top-n 15
+```
+
+### 方式 3: 命令行参数
+
+```bash
+python3 scripts/digest.py \
+  --api-key "your-api-key" \
+  --hours 48 \
+  --top-n 15 \
+  --output ./digest.md
 ```
 
 ## 功能特性

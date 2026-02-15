@@ -39,17 +39,54 @@ RSS 抓取 → 时间过滤 → AI 评分+分类 → AI 摘要+翻译 → 趋势
 
 ### CLI
 
-```bash
-# 基础使用（需要 Moonshot API Key）
-export MOONSHOT_API_KEY="your-key"
-python3 scripts/digest.py --hours 48 --top-n 15 --output ./digest.md
+#### 方式 1: 交互式配置（推荐）
 
-# 使用 OpenClaw Gateway（如果配置了）
-python3 scripts/digest.py --hours 24 --top-n 10 \
-  --gateway http://localhost:8080 \
-  --api-key your-gateway-token \
+```bash
+# 首次运行 - 配置向导
+python3 scripts/digest.py --setup
+
+# 之后直接运行（使用保存的配置）
+python3 scripts/digest.py
+
+# 查看当前配置
+python3 scripts/digest.py --config
+```
+
+#### 方式 2: 环境变量
+
+```bash
+export MOONSHOT_API_KEY="your-key"
+export AI_DIGEST_GATEWAY="http://127.0.0.1:18789"  # 可选
+python3 scripts/digest.py --hours 48 --top-n 15
+```
+
+#### 方式 3: 命令行参数
+
+```bash
+python3 scripts/digest.py \
+  --api-key "your-api-key" \
+  --gateway "http://127.0.0.1:18789" \
+  --hours 48 \
+  --top-n 15 \
   --output ~/Desktop/digest.md
 ```
+
+### Configuration
+
+配置文件保存在 `~/.ai-daily-digest/config.json`：
+
+```json
+{
+  "api_key": "your-api-key",
+  "gateway_url": "http://127.0.0.1:18789",
+  "default_hours": 48,
+  "default_top_n": 15,
+  "language": "zh",
+  "output_dir": "/Users/username/Desktop"
+}
+```
+
+配置优先级：**环境变量 > 配置文件 > 默认值**
 
 ### Parameters
 

@@ -6,13 +6,150 @@ AI Daily Digest - Kimi 2.5 Edition
 """
 
 import json
+import os
 import re
+import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Dict, Optional, Any
 import urllib.request
 import urllib.parse
 import ssl
+
+# ============================================================================
+# Configuration Management
+# ============================================================================
+
+CONFIG_DIR = Path.home() / '.ai-daily-digest'
+CONFIG_FILE = CONFIG_DIR / 'config.json'
+
+def ensure_config_dir():
+    """Ensure config directory exists."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+def load_config() -> Dict[str, Any]:
+    """Load configuration from file."""
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[config] Warning: Failed to load config: {e}")
+    return {}
+
+def save_config(config: Dict[str, Any]):
+    """Save configuration to file."""
+    ensure_config_dir()
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"[config] Saved to {CONFIG_FILE}")
+    except Exception as e:
+        print(f"[config] Error: Failed to save config: {e}")
+
+def interactive_setup():
+    """Interactive configuration setup."""
+    print("=" * 50)
+    print("🚀 AI Daily Digest - First Time Setup")
+    print("=" * 50)
+    print()
+    
+    config = load_config()
+    
+    # API Key
+    print("📋 Configuration (press Enter to keep existing value)")
+    print()
+    
+    # API Key
+    existing_key = config.get('api_key', '')
+    if existing_key:
+        masked = existing_key[:4] + '*' * (len(existing_key) - 8) + existing_key[-4:] if len(existing_key) > 8 else '****'
+        print(f"API Key [{masked}]: ", end='', flush=True)
+    else:
+        print("API Key (Moonshot/OpenAI compatible): ", end='', flush=True)
+    
+    api_key = input().strip()
+    if api_key:
+        config['api_key'] = api_key
+    elif not existing_key:
+        print("⚠️  Warning: No API key provided. You'll need to set it via --api-key or MOONSHOT_API_KEY env var.")
+    
+    # Gateway URL
+    existing_gateway = config.get('gateway_url', '')
+    print(f"Gateway URL [{existing_gateway or 'None'}]: ", end='', flush=True)
+    gateway = input().strip()
+    if gateway:
+        config['gateway_url'] = gateway
+    elif existing_gateway and not gateway:
+        # Keep existing
+        pass
+    
+    # Default hours
+    existing_hours = config.get('default_hours', 48)
+    print(f"Default time window (hours) [{existing_hours}]: ", end='', flush=True)
+    hours = input().strip()
+    if hours:
+        try:
+            config['default_hours'] = int(hours)
+        except:
+            pass
+    
+    # Default top-n
+    existing_topn = config.get('default_top_n', 15)
+    print(f"Default number of articles [{existing_topn}]: ", end='', flush=True)
+    topn = input().strip()
+    if topn:
+        try:
+            config['default_top_n'] = int(topn)
+        except:
+            pass
+    
+    # Language
+    existing_lang = config.get('language', 'zh')
+    print(f"Output language (zh/en) [{existing_lang}]: ", end='', flush=True)
+    lang = input().strip()
+    if lang:
+        config['language'] = lang
+    
+    # Output directory
+    existing_output = config.get('output_dir', str(Path.home() / 'Desktop'))
+    print(f"Default output directory [{existing_output}]: ", end='', flush=True)
+    output_dir = input().strip()
+    if output_dir:
+        config['output_dir'] = output_dir
+    
+    # Save
+    save_config(config)
+    print()
+    print("✅ Configuration saved!")
+    print(f"   Config file: {CONFIG_FILE}")
+    print()
+    print("You can run 'python3 digest.py --setup' to reconfigure anytime.")
+    print()
+    
+    return config
+
+def get_config_value(config: Dict[str, Any], key: str, default=None):
+    """Get config value with priority: env var > config file > default."""
+    # Check environment variable
+    env_map = {
+        'api_key': 'MOONSHOT_API_KEY',
+        'gateway_url': 'AI_DIGEST_GATEWAY',
+        'default_hours': 'AI_DIGEST_HOURS',
+        'default_top_n': 'AI_DIGEST_TOP_N',
+    }
+    
+    if key in env_map:
+        env_val = os.environ.get(env_map[key])
+        if env_val:
+            return env_val
+    
+    # Check config file
+    if key in config:
+        return config[key]
+    
+    return default
 
 # ============================================================================
 # Constants
@@ -308,11 +445,10 @@ def fetch_all_feeds(feeds: List[Dict]) -> List[Dict]:
 # ============================================================================
 
 def call_kimi(prompt: str, api_key: str = None, gateway_url: str = None) -> str:
-    """Call Kimi K2.5 API."""
-    # Use OpenClaw Gateway if available, otherwise use direct Moonshot API
+    """Call Kimi K2.5 API via OpenClaw Gateway or direct API."""
     
     if gateway_url:
-        # Use OpenClaw Gateway
+        # Use OpenClaw Gateway (OpenAI-compatible format)
         req = urllib.request.Request(
             f"{gateway_url}/v1/chat/completions",
             headers={
@@ -323,6 +459,7 @@ def call_kimi(prompt: str, api_key: str = None, gateway_url: str = None) -> str:
                 'model': 'kimi-coding/k2p5',
                 'messages': [{'role': 'user', 'content': prompt}],
                 'temperature': 0.3,
+                'max_tokens': 4000,
             }).encode('utf-8'),
             method='POST'
         )
@@ -338,11 +475,12 @@ def call_kimi(prompt: str, api_key: str = None, gateway_url: str = None) -> str:
                 'model': 'kimi-k2-5',
                 'messages': [{'role': 'user', 'content': prompt}],
                 'temperature': 0.3,
+                'max_tokens': 4000,
             }).encode('utf-8'),
             method='POST'
         )
     
-    response = urllib.request.urlopen(req, timeout=60)
+    response = urllib.request.urlopen(req, timeout=120)
     data = json.loads(response.read().decode('utf-8'))
     
     return data['choices'][0]['message']['content'] if 'choices' in data else ''
@@ -639,15 +777,51 @@ def generate_markdown(articles: List[Dict], trends: str, hours: int, top_n: int)
 def main():
     import argparse
     
+    # Load config for defaults
+    config = load_config()
+    
     parser = argparse.ArgumentParser(description='AI Daily Digest - Kimi Edition')
-    parser.add_argument('--hours', type=int, default=48, help='Time window in hours (default: 48)')
-    parser.add_argument('--top-n', type=int, default=15, help='Number of top articles (default: 15)')
-    parser.add_argument('--lang', default='zh', help='Output language (default: zh)')
-    parser.add_argument('--output', '-o', default='./digest.md', help='Output file path')
-    parser.add_argument('--api-key', help='Kimi/Moonshot API Key')
-    parser.add_argument('--gateway', help='OpenClaw Gateway URL (optional)')
+    parser.add_argument('--hours', type=int, default=get_config_value(config, 'default_hours', 48),
+                        help='Time window in hours (default: from config or 48)')
+    parser.add_argument('--top-n', type=int, default=get_config_value(config, 'default_top_n', 15),
+                        help='Number of top articles (default: from config or 15)')
+    parser.add_argument('--lang', default=get_config_value(config, 'language', 'zh'),
+                        help='Output language (default: from config or zh)')
+    parser.add_argument('--output', '-o', default=None,
+                        help='Output file path (default: auto-generated in output_dir)')
+    parser.add_argument('--api-key', default=get_config_value(config, 'api_key', None),
+                        help='Kimi/Moonshot API Key (default: from config or env)')
+    parser.add_argument('--gateway', default=get_config_value(config, 'gateway_url', None),
+                        help='OpenClaw Gateway URL (default: from config)')
+    parser.add_argument('--setup', action='store_true',
+                        help='Run interactive configuration setup')
+    parser.add_argument('--config', action='store_true',
+                        help='Show current configuration')
     
     args = parser.parse_args()
+    
+    # Handle setup
+    if args.setup:
+        interactive_setup()
+        return 0
+    
+    # Handle config display
+    if args.config:
+        print("Current configuration:")
+        print(f"  Config file: {CONFIG_FILE}")
+        print(f"  API Key: {'***' + config.get('api_key', '')[-4:] if config.get('api_key') else 'Not set'}")
+        print(f"  Gateway URL: {config.get('gateway_url', 'Not set')}")
+        print(f"  Default hours: {config.get('default_hours', 48)}")
+        print(f"  Default top-n: {config.get('default_top_n', 15)}")
+        print(f"  Language: {config.get('language', 'zh')}")
+        print(f"  Output dir: {config.get('output_dir', str(Path.home() / 'Desktop'))}")
+        return 0
+    
+    # Auto-generate output path if not specified
+    if not args.output:
+        output_dir = Path(get_config_value(config, 'output_dir', str(Path.home() / 'Desktop')))
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        args.output = str(output_dir / f'ai-daily-digest-{date_str}.md')
     
     print(f"[digest] Starting AI Daily Digest (Kimi Edition)")
     print(f"[digest] Time window: {args.hours}h | Top N: {args.top_n}")
@@ -655,7 +829,9 @@ def main():
     
     # Check API key
     if not args.api_key:
-        print("[digest] Error: API key required. Use --api-key or set MOONSHOT_API_KEY env var")
+        print("[digest] Error: API key required.")
+        print("[digest] Run 'python3 digest.py --setup' to configure, or use --api-key")
+        print("[digest] Or set MOONSHOT_API_KEY environment variable")
         return 1
     
     # Step 1: Fetch feeds
@@ -667,8 +843,20 @@ def main():
         return 1
     
     # Step 2: Time filter
-    cutoff = datetime.now() - timedelta(hours=args.hours)
-    recent_articles = [a for a in all_articles if a['pubDate'] >= cutoff]
+    from datetime import timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
+    recent_articles = []
+    for a in all_articles:
+        try:
+            pub_date = a['pubDate']
+            if pub_date:
+                # Ensure both dates are offset-aware
+                if pub_date.tzinfo is None:
+                    pub_date = pub_date.replace(tzinfo=timezone.utc)
+                if pub_date >= cutoff:
+                    recent_articles.append(a)
+        except:
+            pass
     print(f"[digest] Step 2/5: Filtered to {len(recent_articles)} articles from last {args.hours}h")
     
     if not recent_articles:
