@@ -17,7 +17,17 @@ python3 scripts/digest.py --setup
 python3 scripts/digest.py
 ```
 
-### 方式 2: 环境变量
+### 方式 2: 导出到飞书文档
+
+```bash
+# 配置飞书（在 --setup 中设置 Token）
+python3 scripts/digest.py --setup
+
+# 运行时自动导出到飞书
+python3 scripts/digest.py --feishu
+```
+
+### 方式 3: 环境变量
 
 ```bash
 # 设置环境变量
@@ -27,7 +37,7 @@ export MOONSHOT_API_KEY="your-api-key"
 python3 scripts/digest.py --hours 48 --top-n 15
 ```
 
-### 方式 3: 命令行参数
+### 方式 4: 命令行参数
 
 ```bash
 python3 scripts/digest.py \

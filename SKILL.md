@@ -82,11 +82,34 @@ python3 scripts/digest.py \
   "default_hours": 48,
   "default_top_n": 15,
   "language": "zh",
-  "output_dir": "/Users/username/Desktop"
+  "output_dir": "/Users/username/Desktop",
+  "feishu_doc_token": "doxcnxxx",
+  "feishu_folder_token": "fldcnxxx"
 }
 ```
 
 配置优先级：**环境变量 > 配置文件 > 默认值**
+
+### Feishu Integration
+
+支持自动导出到飞书文档：
+
+```bash
+# 方式 1: 追加到现有文档
+python3 scripts/digest.py --setup
+# 设置 Feishu Doc Token
+
+# 方式 2: 创建到新文档
+python3 scripts/digest.py --setup
+# 设置 Feishu Folder Token
+
+# 运行时导出
+python3 scripts/digest.py --feishu
+```
+
+获取 Token：
+- **Doc Token**: 从飞书文档 URL 提取 `https://xxx.feishu.cn/docx/ABC123` → `ABC123`
+- **Folder Token**: 从飞书云盘文件夹 URL 提取
 
 ### Parameters
 

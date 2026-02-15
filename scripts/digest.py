@@ -24,6 +24,17 @@ import ssl
 CONFIG_DIR = Path.home() / '.ai-daily-digest'
 CONFIG_FILE = CONFIG_DIR / 'config.json'
 
+# Feishu integration
+FEISHU_ENABLED = False
+try:
+    # Try to import feishu tools
+    import subprocess
+    result = subprocess.run(['openclaw', 'feishu', 'status'], 
+                          capture_output=True, text=True, timeout=5)
+    FEISHU_ENABLED = result.returncode == 0
+except:
+    pass
+
 def ensure_config_dir():
     """Ensure config directory exists."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -118,6 +129,29 @@ def interactive_setup():
     output_dir = input().strip()
     if output_dir:
         config['output_dir'] = output_dir
+    
+    # Feishu integration
+    print()
+    print("📋 Feishu Integration (optional)")
+    existing_feishu_doc = config.get('feishu_doc_token', '')
+    if existing_feishu_doc:
+        masked = existing_feishu_doc[:6] + '...' + existing_feishu_doc[-4:]
+        print(f"Feishu Doc Token [{masked}]: ", end='', flush=True)
+    else:
+        print("Feishu Doc Token (for appending to existing doc): ", end='', flush=True)
+    feishu_doc = input().strip()
+    if feishu_doc:
+        config['feishu_doc_token'] = feishu_doc
+    
+    existing_feishu_folder = config.get('feishu_folder_token', '')
+    if existing_feishu_folder:
+        masked = existing_feishu_folder[:6] + '...' + existing_feishu_folder[-4:]
+        print(f"Feishu Folder Token [{masked}]: ", end='', flush=True)
+    else:
+        print("Feishu Folder Token (for creating new docs): ", end='', flush=True)
+    feishu_folder = input().strip()
+    if feishu_folder:
+        config['feishu_folder_token'] = feishu_folder
     
     # Save
     save_config(config)
@@ -844,6 +878,94 @@ def generate_markdown(articles: List[Dict], trends: str, hours: int, top_n: int)
     return '\n'.join(lines)
 
 # ============================================================================
+# Feishu Integration
+# ============================================================================
+
+def write_to_feishu(content: str, title: str = None, doc_token: str = None, 
+                    folder_token: str = None) -> str:
+    """Write content to Feishu document.
+    
+    Args:
+        content: Markdown content to write
+        title: Document title (for new documents)
+        doc_token: Existing document token (for overwrite/append)
+        folder_token: Folder token for new documents
+    
+    Returns:
+        Document URL or error message
+    """
+    try:
+        # Check if feishu_doc tool is available via OpenClaw
+        import subprocess
+        
+        # Create a temporary file with the content
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+            f.write(content)
+            temp_path = f.name
+        
+        if doc_token:
+            # Append to existing document
+            result = subprocess.run(
+                ['openclaw', 'feishu', 'doc', 'append', doc_token, temp_path],
+                capture_output=True, text=True, timeout=30
+            )
+        else:
+            # Create new document
+            cmd = ['openclaw', 'feishu', 'doc', 'create', title or 'AI Daily Digest']
+            if folder_token:
+                cmd.extend(['--folder', folder_token])
+            cmd.append(temp_path)
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        # Clean up temp file
+        os.unlink(temp_path)
+        
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            return f"Feishu error: {result.stderr}"
+            
+    except FileNotFoundError:
+        return "Feishu tool not found. Make sure feishu extension is installed."
+    except Exception as e:
+        return f"Feishu write failed: {e}"
+
+def export_to_feishu(markdown: str, config: Dict[str, Any]) -> str:
+    """Export digest to Feishu document.
+    
+    Returns document URL if successful, error message otherwise.
+    """
+    feishu_token = config.get('feishu_doc_token')
+    feishu_folder = config.get('feishu_folder_token')
+    
+    if not feishu_token and not feishu_folder:
+        return "No Feishu configuration found. Run --setup to configure."
+    
+    # Generate title with date
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    title = f"技术日报 {date_str}"
+    
+    print(f"[feishu] Exporting to Feishu: {title}")
+    
+    if feishu_token:
+        # Append to existing document
+        result = write_to_feishu(
+            f"\n\n---\n\n{markdown}", 
+            doc_token=feishu_token
+        )
+    else:
+        # Create new document
+        result = write_to_feishu(
+            markdown,
+            title=title,
+            folder_token=feishu_folder
+        )
+    
+    return result
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -870,6 +992,8 @@ def main():
                         help='Run interactive configuration setup')
     parser.add_argument('--config', action='store_true',
                         help='Show current configuration')
+    parser.add_argument('--feishu', action='store_true',
+                        help='Export to Feishu document after generation')
     
     args = parser.parse_args()
     
@@ -888,6 +1012,10 @@ def main():
         print(f"  Default top-n: {config.get('default_top_n', 15)}")
         print(f"  Language: {config.get('language', 'zh')}")
         print(f"  Output dir: {config.get('output_dir', str(Path.home() / 'Desktop'))}")
+        feishu_doc = config.get('feishu_doc_token', '')
+        feishu_folder = config.get('feishu_folder_token', '')
+        print(f"  Feishu Doc: {'***' + feishu_doc[-4:] if feishu_doc else 'Not set'}")
+        print(f"  Feishu Folder: {'***' + feishu_folder[-4:] if feishu_folder else 'Not set'}")
         return 0
     
     # Auto-generate output path if not specified
@@ -964,6 +1092,15 @@ def main():
     
     print(f"[digest] Done! Output: {args.output}")
     print(f"[digest] Total: {len(summarized)} articles scored, top {len(summarized[:args.top_n])} included")
+    
+    # Export to Feishu if requested
+    if args.feishu:
+        print("[digest] Exporting to Feishu...")
+        feishu_result = export_to_feishu(markdown, config)
+        if feishu_result.startswith('http'):
+            print(f"[digest] ✓ Exported to Feishu: {feishu_result}")
+        else:
+            print(f"[digest] ✗ Feishu export failed: {feishu_result}")
     
     return 0
 
