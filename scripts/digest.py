@@ -181,7 +181,7 @@ RSS_FEEDS = [
     {"name": "devblogs.microsoft.com/oldnewthing", "xmlUrl": "https://devblogs.microsoft.com/oldnewthing/feed", "htmlUrl": "https://devblogs.microsoft.com/oldnewthing"},
     {"name": "righto.com", "xmlUrl": "https://www.righto.com/feeds/posts/default", "htmlUrl": "https://righto.com"},
     {"name": "lucumr.pocoo.org", "xmlUrl": "https://lucumr.pocoo.org/feed.atom", "htmlUrl": "https://lucumr.pocoo.org"},
-    {"name": "skyfall.dev", "xmlUrl": "https://skyfall.dev/rss.xml", "htmlUrl": "https://skyfall.dev"},
+    {"name": "skyfall.dev", "xmlUrl": "https://skyfall.dev/feed.xml", "htmlUrl": "https://skyfall.dev"},
     {"name": "garymarcus.substack.com", "xmlUrl": "https://garymarcus.substack.com/feed", "htmlUrl": "https://garymarcus.substack.com"},
     {"name": "rachelbythebay.com", "xmlUrl": "https://rachelbythebay.com/w/atom.xml", "htmlUrl": "https://rachelbythebay.com"},
     {"name": "overreacted.io", "xmlUrl": "https://overreacted.io/rss.xml", "htmlUrl": "https://overreacted.io"},
@@ -365,50 +365,135 @@ def parse_rss_items(xml: str) -> List[Dict[str, str]]:
     return items
 
 # ============================================================================
-# Feed Fetching
+# Feed Fetching (Enhanced with retry and better error handling)
 # ============================================================================
 
+# Feeds with known issues and their fallback URLs or fixes
+FEED_FALLBACKS = {
+    'skyfall.dev': {
+        'original': 'https://skyfall.dev/rss.xml',
+        'fallback': 'https://skyfall.dev/feed.xml',  # Try alternative path
+    },
+    'dwarkesh.com': {
+        'original': 'https://www.dwarkeshpatel.com/feed',
+        'note': 'Returns 308, feed may be at different URL',
+    },
+    'rachelbythebay.com': {
+        'note': 'SSL/TLS protocol version issue - requires TLS 1.2+',
+    },
+    'tedunangst.com': {
+        'note': 'SSL handshake issue - may need specific TLS version',
+    },
+}
+
+def create_ssl_context_legacy() -> ssl.SSLContext:
+    """Create SSL context with legacy support for older servers."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    # Enable all TLS versions for compatibility
+    context.minimum_version = ssl.TLSVersion.TLSv1
+    return context
+
+def create_ssl_context_modern() -> ssl.SSLContext:
+    """Create SSL context for modern servers."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+def fetch_feed_with_retry(feed: Dict[str, str], max_retries: int = 2) -> List[Dict]:
+    """Fetch articles from a single RSS feed with retry logic."""
+    urls_to_try = [feed['xmlUrl']]
+    
+    # Check if there's a fallback URL
+    feed_name = feed['name']
+    if feed_name in FEED_FALLBACKS:
+        fallback = FEED_FALLBACKS[feed_name].get('fallback')
+        if fallback and fallback not in urls_to_try:
+            urls_to_try.append(fallback)
+    
+    last_error = None
+    
+    for attempt, url in enumerate(urls_to_try):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'AI-Daily-Digest/1.0 (RSS Reader; Python urllib)',
+                    'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
+                    'Accept-Encoding': 'identity',
+                    'Connection': 'close',
+                }
+            )
+            
+            # Choose SSL context based on feed
+            if feed_name in ['rachelbythebay.com', 'tedunangst.com']:
+                ssl_context = create_ssl_context_legacy()
+            else:
+                ssl_context = create_ssl_context_modern()
+            
+            # Open connection with redirect handling
+            response = urllib.request.urlopen(
+                req, 
+                timeout=FEED_FETCH_TIMEOUT_MS/1000, 
+                context=ssl_context
+            )
+            
+            # Check if we got redirected
+            final_url = response.geturl()
+            if final_url != url:
+                print(f"[digest] → {feed['name']}: redirected to {final_url[:60]}...")
+            
+            xml = response.read().decode('utf-8', errors='ignore')
+            
+            items = parse_rss_items(xml)
+            
+            articles = []
+            for item in items:
+                pub_date = parse_date(item['pubDate']) or datetime(1970, 1, 1)
+                articles.append({
+                    'title': item['title'],
+                    'link': item['link'],
+                    'pubDate': pub_date,
+                    'description': item['description'],
+                    'sourceName': feed['name'],
+                    'sourceUrl': feed['htmlUrl'],
+                })
+            
+            return articles
+            
+        except urllib.error.HTTPError as e:
+            last_error = f"HTTP {e.code}"
+            # Handle redirects manually if needed
+            if e.code in (301, 302, 307, 308) and 'Location' in e.headers:
+                redirect_url = e.headers['Location']
+                if redirect_url not in urls_to_try:
+                    urls_to_try.append(redirect_url)
+                    print(f"[digest] → {feed['name']}: following redirect to {redirect_url[:60]}...")
+            else:
+                break  # Don't retry on other HTTP errors
+                
+        except Exception as e:
+            last_error = str(e)
+            # Continue to next URL or retry
+    
+    # All attempts failed
+    error_msg = last_error or "Unknown error"
+    if 'timeout' in error_msg.lower():
+        print(f"[digest] ✗ {feed['name']}: timeout")
+    elif 'certificate' in error_msg.lower() or 'ssl' in error_msg.lower():
+        print(f"[digest] ✗ {feed['name']}: SSL error (skipping)")
+    elif '308' in error_msg or 'redirect' in error_msg.lower():
+        print(f"[digest] ✗ {feed['name']}: redirect loop or permanent redirect")
+    else:
+        print(f"[digest] ✗ {feed['name']}: {error_msg[:60]}")
+    
+    return []
+
 def fetch_feed(feed: Dict[str, str]) -> List[Dict]:
-    """Fetch articles from a single RSS feed."""
-    try:
-        req = urllib.request.Request(
-            feed['xmlUrl'],
-            headers={
-                'User-Agent': 'AI-Daily-Digest/1.0 (RSS Reader)',
-                'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
-            }
-        )
-        
-        # Create SSL context that doesn't verify certificates (for some feeds)
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
-        response = urllib.request.urlopen(req, timeout=FEED_FETCH_TIMEOUT_MS/1000, context=ssl_context)
-        xml = response.read().decode('utf-8', errors='ignore')
-        
-        items = parse_rss_items(xml)
-        
-        articles = []
-        for item in items:
-            pub_date = parse_date(item['pubDate']) or datetime(1970, 1, 1)
-            articles.append({
-                'title': item['title'],
-                'link': item['link'],
-                'pubDate': pub_date,
-                'description': item['description'],
-                'sourceName': feed['name'],
-                'sourceUrl': feed['htmlUrl'],
-            })
-        
-        return articles
-    except Exception as e:
-        error_msg = str(e)
-        if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
-            print(f"[digest] ✗ {feed['name']}: timeout")
-        else:
-            print(f"[digest] ✗ {feed['name']}: {error_msg[:50]}")
-        return []
+    """Fetch articles from a single RSS feed (wrapper with retry)."""
+    return fetch_feed_with_retry(feed, max_retries=2)
 
 def fetch_all_feeds(feeds: List[Dict]) -> List[Dict]:
     """Fetch articles from all feeds with concurrency control."""
@@ -445,42 +530,30 @@ def fetch_all_feeds(feeds: List[Dict]) -> List[Dict]:
 # ============================================================================
 
 def call_kimi(prompt: str, api_key: str = None, gateway_url: str = None) -> str:
-    """Call Kimi K2.5 API via OpenClaw Gateway or direct API."""
+    """Call Kimi K2.5 API via Moonshot API."""
     
-    if gateway_url:
-        # Use OpenClaw Gateway (OpenAI-compatible format)
-        req = urllib.request.Request(
-            f"{gateway_url}/v1/chat/completions",
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {api_key}' if api_key else '',
-            },
-            data=json.dumps({
-                'model': 'kimi-coding/k2p5',
-                'messages': [{'role': 'user', 'content': prompt}],
-                'temperature': 0.3,
-                'max_tokens': 4000,
-            }).encode('utf-8'),
-            method='POST'
-        )
-    else:
-        # Use Moonshot API directly
-        req = urllib.request.Request(
-            'https://api.moonshot.cn/v1/chat/completions',
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {api_key}',
-            },
-            data=json.dumps({
-                'model': 'kimi-k2-5',
-                'messages': [{'role': 'user', 'content': prompt}],
-                'temperature': 0.3,
-                'max_tokens': 4000,
-            }).encode('utf-8'),
-            method='POST'
-        )
+    # Moonshot API endpoint
+    url = 'https://api.moonshot.cn/v1/chat/completions'
     
-    response = urllib.request.urlopen(req, timeout=120)
+    req = urllib.request.Request(
+        url,
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {api_key}',
+        },
+        data=json.dumps({
+            'model': 'kimi-k2-5',
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.3,
+            'max_tokens': 4000,
+        }).encode('utf-8'),
+        method='POST'
+    )
+    
+    # Create SSL context
+    ssl_context = ssl.create_default_context()
+    
+    response = urllib.request.urlopen(req, timeout=120, context=ssl_context)
     data = json.loads(response.read().decode('utf-8'))
     
     return data['choices'][0]['message']['content'] if 'choices' in data else ''
