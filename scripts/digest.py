@@ -878,64 +878,145 @@ def generate_markdown(articles: List[Dict], trends: str, hours: int, top_n: int)
     return '\n'.join(lines)
 
 # ============================================================================
-# Feishu Integration
+# Feishu Integration (Enhanced)
 # ============================================================================
 
+def check_feishu_available() -> bool:
+    """Check if Feishu tools are available."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['which', 'openclaw'],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.returncode == 0
+    except:
+        return False
+
+def extract_doc_info(output: str) -> Dict[str, str]:
+    """Extract document info from feishu command output."""
+    result = {'url': '', 'token': '', 'title': ''}
+    
+    # Look for URL in output
+    for line in output.split('\n'):
+        if 'feishu.cn/docx/' in line or 'feishu.cn/docs/' in line:
+            result['url'] = line.strip()
+            # Extract token from URL
+            if '/docx/' in line:
+                parts = line.split('/docx/')
+                if len(parts) > 1:
+                    result['token'] = parts[1].split('?')[0].split('/')[0]
+            break
+    
+    return result
+
 def write_to_feishu(content: str, title: str = None, doc_token: str = None, 
-                    folder_token: str = None) -> str:
-    """Write content to Feishu document.
+                    folder_token: str = None, mode: str = 'append') -> Dict[str, Any]:
+    """Write content to Feishu document with enhanced error handling.
     
     Args:
         content: Markdown content to write
         title: Document title (for new documents)
-        doc_token: Existing document token (for overwrite/append)
+        doc_token: Existing document token
         folder_token: Folder token for new documents
+        mode: 'append', 'write' (replace), or 'create'
     
     Returns:
-        Document URL or error message
+        Dict with 'success', 'url', 'token', 'error' keys
     """
+    result = {'success': False, 'url': '', 'token': '', 'error': ''}
+    
     try:
-        # Check if feishu_doc tool is available via OpenClaw
         import subprocess
-        
-        # Create a temporary file with the content
         import tempfile
+        
+        # Check if openclaw is available
+        check = subprocess.run(['which', 'openclaw'], capture_output=True, timeout=5)
+        if check.returncode != 0:
+            result['error'] = "OpenClaw CLI not found. Please install OpenClaw."
+            return result
+        
+        # Create temporary file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
             f.write(content)
             temp_path = f.name
         
-        if doc_token:
-            # Append to existing document
-            result = subprocess.run(
-                ['openclaw', 'feishu', 'doc', 'append', doc_token, temp_path],
-                capture_output=True, text=True, timeout=30
-            )
-        else:
-            # Create new document
-            cmd = ['openclaw', 'feishu', 'doc', 'create', title or 'AI Daily Digest']
-            if folder_token:
-                cmd.extend(['--folder', folder_token])
-            cmd.append(temp_path)
+        try:
+            if mode == 'append' and doc_token:
+                # Append to existing document
+                cmd = ['openclaw', 'feishu', 'doc', 'append', doc_token, temp_path]
+                print(f"[feishu] Appending to existing document...")
+                
+            elif mode == 'write' and doc_token:
+                # Replace existing document content
+                cmd = ['openclaw', 'feishu', 'doc', 'write', doc_token, temp_path]
+                print(f"[feishu] Writing to existing document...")
+                
+            else:
+                # Create new document
+                doc_title = title or f"AI Daily Digest {datetime.now().strftime('%Y-%m-%d')}"
+                cmd = ['openclaw', 'feishu', 'doc', 'create', doc_title]
+                if folder_token:
+                    cmd.extend(['--folder', folder_token])
+                cmd.append(temp_path)
+                print(f"[feishu] Creating new document: {doc_title}")
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        
-        # Clean up temp file
-        os.unlink(temp_path)
-        
-        if result.returncode == 0:
-            return result.stdout.strip()
-        else:
-            return f"Feishu error: {result.stderr}"
-            
+            # Run command with retry
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    proc_result = subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=60
+                    )
+                    
+                    if proc_result.returncode == 0:
+                        output = proc_result.stdout.strip()
+                        info = extract_doc_info(output)
+                        result['success'] = True
+                        result['url'] = info['url'] or output
+                        result['token'] = info['token']
+                        break
+                    else:
+                        error = proc_result.stderr.strip() or proc_result.stdout.strip()
+                        if attempt < max_retries - 1:
+                            print(f"[feishu] Attempt {attempt + 1} failed, retrying...")
+                            import time
+                            time.sleep(2)
+                        else:
+                            result['error'] = f"Feishu API error: {error}"
+                            
+                except subprocess.TimeoutExpired:
+                    if attempt < max_retries - 1:
+                        print(f"[feishu] Timeout, retrying...")
+                        continue
+                    else:
+                        result['error'] = "Feishu API timeout"
+                        
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+                
     except FileNotFoundError:
-        return "Feishu tool not found. Make sure feishu extension is installed."
+        result['error'] = "OpenClaw not found. Please install OpenClaw with Feishu extension."
     except Exception as e:
-        return f"Feishu write failed: {e}"
-
-def export_to_feishu(markdown: str, config: Dict[str, Any]) -> str:
-    """Export digest to Feishu document.
+        result['error'] = f"Feishu operation failed: {e}"
     
-    Returns document URL if successful, error message otherwise.
+    return result
+
+def export_to_feishu(markdown: str, config: Dict[str, Any], 
+                     export_mode: str = 'auto') -> str:
+    """Export digest to Feishu document with smart handling.
+    
+    Args:
+        markdown: Content to export
+        config: Configuration dict
+        export_mode: 'auto', 'append', 'create', or 'update'
+    
+    Returns:
+        Document URL if successful, error message otherwise
     """
     feishu_token = config.get('feishu_doc_token')
     feishu_folder = config.get('feishu_folder_token')
@@ -947,23 +1028,49 @@ def export_to_feishu(markdown: str, config: Dict[str, Any]) -> str:
     date_str = datetime.now().strftime('%Y-%m-%d')
     title = f"技术日报 {date_str}"
     
+    print(f"[feishu] {'='*50}")
     print(f"[feishu] Exporting to Feishu: {title}")
+    print(f"[feishu] {'='*50}")
     
-    if feishu_token:
-        # Append to existing document
+    # Determine mode
+    if export_mode == 'auto':
+        if feishu_token:
+            mode = 'append'
+            print(f"[feishu] Mode: Append to existing document")
+        else:
+            mode = 'create'
+            print(f"[feishu] Mode: Create new document")
+    else:
+        mode = export_mode
+    
+    # Write content
+    if mode == 'append' and feishu_token:
+        # Add separator and header for new section
+        content = f"\n\n---\n\n# 📅 {title}\n\n{markdown}"
         result = write_to_feishu(
-            f"\n\n---\n\n{markdown}", 
-            doc_token=feishu_token
+            content, 
+            doc_token=feishu_token,
+            mode='append'
         )
     else:
-        # Create new document
+        # Create or update
         result = write_to_feishu(
             markdown,
             title=title,
-            folder_token=feishu_folder
+            folder_token=feishu_folder,
+            doc_token=feishu_token if mode in ['write', 'update'] else None,
+            mode=mode if mode in ['write', 'update'] else 'create'
         )
     
-    return result
+    if result['success']:
+        print(f"[feishu] ✓ Export successful!")
+        print(f"[feishu] URL: {result['url']}")
+        if result['token']:
+            print(f"[feishu] Token: {result['token']}")
+        return result['url']
+    else:
+        print(f"[feishu] ✗ Export failed: {result['error']}")
+        return result['error']
 
 # ============================================================================
 # Main
@@ -994,6 +1101,9 @@ def main():
                         help='Show current configuration')
     parser.add_argument('--feishu', action='store_true',
                         help='Export to Feishu document after generation')
+    parser.add_argument('--feishu-mode', choices=['auto', 'append', 'create', 'update'],
+                        default='auto',
+                        help='Feishu export mode: auto (default), append, create, or update')
     
     args = parser.parse_args()
     
@@ -1095,8 +1205,7 @@ def main():
     
     # Export to Feishu if requested
     if args.feishu:
-        print("[digest] Exporting to Feishu...")
-        feishu_result = export_to_feishu(markdown, config)
+        feishu_result = export_to_feishu(markdown, config, export_mode=args.feishu_mode)
         if feishu_result.startswith('http'):
             print(f"[digest] ✓ Exported to Feishu: {feishu_result}")
         else:

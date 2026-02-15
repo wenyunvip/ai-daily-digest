@@ -22,9 +22,18 @@ python3 scripts/digest.py
 ```bash
 # 配置飞书（在 --setup 中设置 Token）
 python3 scripts/digest.py --setup
+# 按提示设置：
+# - Feishu Doc Token: 追加到现有文档
+# - Feishu Folder Token: 创建新文档到指定文件夹
 
-# 运行时自动导出到飞书
+# 运行时自动导出到飞书（智能模式：有 Doc Token 则追加，否则创建新文档）
 python3 scripts/digest.py --feishu
+
+# 强制创建新文档（即使有 Doc Token）
+python3 scripts/digest.py --feishu --feishu-mode create
+
+# 强制追加到现有文档
+python3 scripts/digest.py --feishu --feishu-mode append
 ```
 
 ### 方式 3: 环境变量

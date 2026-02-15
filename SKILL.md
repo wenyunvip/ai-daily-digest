@@ -92,24 +92,36 @@ python3 scripts/digest.py \
 
 ### Feishu Integration
 
-支持自动导出到飞书文档：
+支持自动导出到飞书文档，支持多种导出模式：
 
 ```bash
-# 方式 1: 追加到现有文档
+# 配置飞书（交互式）
 python3 scripts/digest.py --setup
-# 设置 Feishu Doc Token
 
-# 方式 2: 创建到新文档
-python3 scripts/digest.py --setup
-# 设置 Feishu Folder Token
-
-# 运行时导出
+# 智能导出（auto 模式）
+# - 如果有 Doc Token，追加到现有文档
+# - 如果有 Folder Token，创建新文档
 python3 scripts/digest.py --feishu
+
+# 强制创建新文档
+python3 scripts/digest.py --feishu --feishu-mode create
+
+# 强制追加到现有文档
+python3 scripts/digest.py --feishu --feishu-mode append
+
+# 覆盖现有文档内容
+python3 scripts/digest.py --feishu --feishu-mode update
 ```
 
-获取 Token：
-- **Doc Token**: 从飞书文档 URL 提取 `https://xxx.feishu.cn/docx/ABC123` → `ABC123`
-- **Folder Token**: 从飞书云盘文件夹 URL 提取
+**获取 Token**：
+- **Doc Token**: 从飞书文档 URL 提取 `https://xxx.feishu.cn/docx/ABC123xxx`
+- **Folder Token**: 从飞书云盘文件夹 URL 提取 `https://xxx.feishu.cn/drive/folder/FLDxxx`
+
+**特性**：
+- ✅ 自动重试机制（失败自动重试 2 次）
+- ✅ Token 提取（从命令输出自动解析文档 URL）
+- ✅ 智能模式（根据配置自动选择追加/创建）
+- ✅ 日期分隔（追加模式自动添加日期标题）
 
 ### Parameters
 
